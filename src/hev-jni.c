@@ -24,10 +24,10 @@
 
 /* clang-format off */
 #ifndef PKGNAME
-#define PKGNAME "hev/htproxy"
+#define PKGNAME "org/thebytearray/hy2/client/service"
 #endif
 #ifndef CLSNAME
-#define CLSNAME "TProxyService"
+#define CLSNAME "Hy2VPNService"
 #endif
 /* clang-format on */
 
@@ -43,6 +43,13 @@ struct _ThreadData
     int fd;
 };
 
+typedef struct _ThreadDataStr ThreadDataStr;
+struct _ThreadDataStr {
+    unsigned char *config;
+    unsigned int len;
+    int fd;
+};
+
 static int is_working;
 static JavaVM *java_vm;
 static pthread_t work_thread;
@@ -53,12 +60,14 @@ static void native_start_service (JNIEnv *env, jobject thiz, jstring conig_path,
                                   jint fd);
 static void native_stop_service (JNIEnv *env, jobject thiz);
 static jlongArray native_get_stats (JNIEnv *env, jobject thiz);
+static void native_start_service_from_string(JNIEnv *env, jobject thiz, jbyteArray config_bytes, jint fd);
 
 static JNINativeMethod native_methods[] = {
-    { "TProxyStartService", "(Ljava/lang/String;I)V",
+    { "startTun2Socks", "(Ljava/lang/String;I)V",
       (void *)native_start_service },
-    { "TProxyStopService", "()V", (void *)native_stop_service },
-    { "TProxyGetStats", "()[J", (void *)native_get_stats },
+    { "startTun2SocksFromString", "([BI)V", (void *)native_start_service_from_string },
+    { "stopTun2Socks", "()V", (void *)native_stop_service },
+    { "getTun2SocksStats", "()[J", (void *)native_get_stats },
 };
 
 static void
@@ -103,6 +112,14 @@ thread_handler (void *data)
     free (tdata->path);
     free (tdata);
 
+    return NULL;
+}
+
+static void *thread_handler_str(void *data) {
+    ThreadDataStr *tdata = data;
+    hev_socks5_tunnel_main_from_str(tdata->config, tdata->len, tdata->fd);
+    free(tdata->config);
+    free(tdata);
     return NULL;
 }
 
@@ -170,6 +187,33 @@ native_get_stats (JNIEnv *env, jobject thiz)
     (*env)->SetLongArrayRegion (env, res, 0, 4, array);
 
     return res;
+}
+
+static void native_start_service_from_string(JNIEnv *env, jobject thiz, jbyteArray config_bytes, jint fd) {
+    jbyte *bytes = NULL;
+    jsize len;
+    ThreadDataStr *tdata;
+    int res;
+    pthread_mutex_lock(&mutex);
+    if (is_working)
+        goto exit;
+    len = (*env)->GetArrayLength(env, config_bytes);
+    bytes = (*env)->GetByteArrayElements(env, config_bytes, NULL);
+    tdata = malloc(sizeof(ThreadDataStr));
+    tdata->config = malloc(len);
+    memcpy(tdata->config, bytes, len);
+    tdata->len = (unsigned int)len;
+    tdata->fd = fd;
+    (*env)->ReleaseByteArrayElements(env, config_bytes, bytes, JNI_ABORT);
+    res = pthread_create(&work_thread, NULL, thread_handler_str, tdata);
+    if (res < 0) {
+        free(tdata->config);
+        free(tdata);
+        goto exit;
+    }
+    is_working = 1;
+exit:
+    pthread_mutex_unlock(&mutex);
 }
 
 #endif /* ANDROID */
